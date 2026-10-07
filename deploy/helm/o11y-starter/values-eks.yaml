@@ -1,0 +1,174 @@
+# AWS EKS — self-contained values file
+#
+# Usage:
+#   helm upgrade --install o11y-starter ./deploy/helm/o11y-starter -f values-eks.yaml
+#
+# Prerequisites on the cluster:
+#   - AWS Load Balancer Controller  (for ingress.className: alb)
+#   - IAM role + OIDC provider      (for serviceAccount IRSA annotation)
+#   - AWS Gateway API Controller    (for gateway.className: amazon-vpc-lattice)
+#   - External Secrets Operator     (for secret.type: external)
+
+replicaCount: 1
+
+image:
+  repository: o11y-starter
+  pullPolicy: IfNotPresent
+  # Overrides the image tag; defaults to the chart appVersion
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations:
+    # Replace with the ARN of the IAM role created for this service.
+    eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/o11y-starter-role"
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# ALB-backed Ingress via AWS Load Balancer Controller
+# Disable and set gateway.enabled: true to use Gateway API (VPC Lattice) instead.
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    # Uncomment to terminate TLS with an ACM certificate and force HTTPS:
+    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:REGION:ACCOUNT:certificate/ID
+    # alb.ingress.kubernetes.io/ssl-redirect: "443"
+  hosts:
+    # ALB generates its own hostname — leave host empty and read it from
+    # `kubectl get ingress o11y-starter -n <namespace>` after deployment.
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Gateway API via AWS Gateway API Controller (VPC Lattice)
+# Enable as an alternative to the ALB Ingress above — do not enable both.
+gateway:
+  enabled: false
+  create: true
+  name: ""
+  existingGatewayName: ""
+  className: amazon-vpc-lattice
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      # VPC Lattice generates the hostname — use "*" to accept any.
+      hostname: "*"
+  httpRoute:
+    # Leave empty when hostname is "*"; VPC Lattice assigns the FQDN.
+    hostnames: []
+    rules:
+      - matches:
+          - path:
+              type: PathPrefix
+              value: /
+
+resources: {}
+  # requests:
+  #   cpu: 100m
+  #   memory: 64Mi
+  # limits:
+  #   cpu: 500m
+  #   memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Application config — maps to environment variables read by internal/config/config.go.
+# These values are written into the ConfigMap (when configMap.enabled is true).
+config:
+  # OTEL_EXPORTER_OTLP_ENDPOINT: gRPC endpoint for the OpenTelemetry Collector
+  otlpEndpoint: "otel-collector:4317"
+  # OTEL_SERVICE_NAME
+  serviceName: "o11y-starter"
+  # LOG_LEVEL: debug | info | warn | error
+  logLevel: "info"
+  # HTTP_ADDR: listening address inside the container (keep :8080 to match EXPOSE)
+  httpAddr: ":8080"
+
+# ConfigMap — non-sensitive environment variables loaded via envFrom.
+configMap:
+  enabled: true
+  # Additional key/value pairs merged into the ConfigMap alongside core config.* values.
+  # extraData:
+  #   FEATURE_FLAG: "true"
+  #   REGION: "us-east-1"
+  extraData: {}
+
+# Secret — sensitive environment variables loaded via envFrom.
+#
+# type: none     — no Secret resource is created; inject secrets externally
+# type: native   — create a Kubernetes Secret from secret.data
+# type: external — create an ExternalSecret (requires External Secrets Operator)
+secret:
+  type: none
+
+  # --- native -----------------------------------------------------------------
+  # Pass values at deploy time to avoid committing credentials:
+  #   helm upgrade --install ... --set secret.type=native \
+  #     --set secret.data.DATABASE_URL="postgres://..." \
+  #     --set secret.data.API_KEY="key123"
+  data: {}
+
+  # --- external (External Secrets Operator + AWS Secrets Manager) -------------
+  external:
+    refreshInterval: "1h"
+    secretStoreRef:
+      # Name of the SecretStore or ClusterSecretStore CR in the cluster.
+      name: ""
+      # "SecretStore" (namespace-scoped) or "ClusterSecretStore" (cluster-wide).
+      kind: ClusterSecretStore
+    # Name of the resulting k8s Secret. Defaults to the release fullname.
+    targetName: ""
+    # Owner | Merge | Orphan
+    creationPolicy: Owner
+    # Map individual keys from AWS Secrets Manager into the Secret.
+    # data:
+    #   - secretKey: DATABASE_URL          # env var name in the pod
+    #     remoteRef:
+    #       key: o11y-starter/prod/database  # secret path in ASM
+    #       property: url                    # JSON field within the secret value
+    #   - secretKey: API_KEY
+    #     remoteRef:
+    #       key: o11y-starter/prod/api-key
+    data: []
+    # Bulk-import all keys under an ASM path as individual Secret entries.
+    # dataFrom:
+    #   - extract:
+    #       key: o11y-starter/prod/secrets
+    dataFrom: []
