@@ -16,10 +16,10 @@
 replicaCount: 1
 
 image:
-  repository: o11y-starter
+  repository: demo-app
   pullPolicy: IfNotPresent
   # Overrides the image tag; defaults to the chart appVersion
-  tag: ""
+  tag: "v2"
 
 imagePullSecrets: []
 nameOverride: ""
